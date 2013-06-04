@@ -1,4 +1,4 @@
-package br.com.shellcode.vraptorutils.utils;
+package br.com.shellcode.vraptorutils.util;
 
 public class InitUtil {
 	@SuppressWarnings("unchecked")
