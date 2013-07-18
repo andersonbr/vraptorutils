@@ -1,15 +1,16 @@
 package br.com.shellcode.vraptorutils.jpa;
 
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-import javax.persistence.Transient;
+import javax.persistence.Entity;
 import javax.persistence.criteria.CriteriaBuilder;
 import javax.persistence.criteria.CriteriaQuery;
 import javax.persistence.criteria.Expression;
+import javax.persistence.criteria.JoinType;
 import javax.persistence.criteria.Order;
 import javax.persistence.criteria.Path;
 import javax.persistence.criteria.Predicate;
@@ -23,10 +24,10 @@ public class JPAUtil {
 	private static final Logger log = LoggerFactory.getLogger(JPAUtil.class);
 
 	public enum OP {
-		EQUAL("EQUAL"), NOTEQUAL("NOTEQUAL"), LIKE("LIKE"), ILIKE("ILIKE"),
-		IN("IN"), NOTIN("NOTIN"), NOTLIKE("NOTLIKE"), NOTILIKE("NOTILIKE"),
-		BETWEEN("BETWEEN"), ISNULL("ISNULL"), ISNOTNULL("ISNOTNULL"), LE("LE"),
-		LT("LT"), GE("GE"), GT("GT");
+		EQUAL("EQUAL"), NOTEQUAL("NOTEQUAL"), LIKE("LIKE"), ILIKE("ILIKE"), IN(
+				"IN"), NOTIN("NOTIN"), NOTLIKE("NOTLIKE"), NOTILIKE("NOTILIKE"), BETWEEN(
+				"BETWEEN"), NOTBETWEEN("NOTBETWEEN"), ISNULL("ISNULL"), ISNOTNULL(
+				"ISNOTNULL"), LE("LE"), LT("LT"), GE("GE"), GT("GT");
 
 		OP(String s) {
 			this.value = s;
@@ -68,8 +69,8 @@ public class JPAUtil {
 	 * @return
 	 */
 	public static <T> CriteriaQuery<Long> getCriteriaCount(Class<T> clazz,
-			CriteriaBuilder cb, Object instance, Map<String, OP> filterMap,
-			List<String> group) {
+			CriteriaBuilder cb, Object instance, Object instanceInterval,
+			Map<String, OP> filterMap, Map<String, OR> sort, List<String> group) {
 
 		/**
 		 * Query result
@@ -84,8 +85,8 @@ public class JPAUtil {
 		/**
 		 * Predicates
 		 */
-		Predicate filters = getPredicates(c, clazz, cb, instance, filterMap,
-				null);
+		Predicate filters = getPredicates(c, clazz, cb, instance,
+				instanceInterval, filterMap, null);
 		if (filters != null)
 			q.where(filters);
 
@@ -101,19 +102,43 @@ public class JPAUtil {
 			List<Expression<?>> listGroups = getGroups(c, group);
 			q.groupBy(listGroups);
 		}
+
+		/**
+		 * Order
+		 */
+		if (sort != null && sort.size() > 0) {
+			List<Order> listorders = getOrders(cb, c, sort);
+			if (listorders != null) {
+				for (String s : sort.keySet()) {
+					Path<String> path = getPath(c, s.replaceAll("\\..*", ""));
+					if (path.getJavaType().getAnnotation(Entity.class) != null) {
+						c.join(s.replaceAll("\\..*", ""), JoinType.INNER);
+						// TODO: see problems with join created by sort, that is
+						// inner
+						// Join<T, Object> join = c.join(s.replaceAll("\\..*",
+						// ""), JoinType.INNER);
+						// q.where(cb.not(cb.isNull(join)));
+					}
+				}
+				// q.orderBy(listorders);
+				// c.join("", JoinType.LEFT);
+			}
+		}
+
 		return q;
 	}
 
 	public static <T> CriteriaQuery<T> getCriteriaQuery(Class<T> from,
-			CriteriaBuilder cb, Object instance, Map<String, OP> filterMap,
-			Map<String, OR> sort, List<String> group) {
-		return getCriteriaQuery(from, from, cb, instance, filterMap, sort,
-				group);
+			CriteriaBuilder cb, Object instance, Object instanceInterval,
+			Map<String, OP> filterMap, Map<String, OR> sort, List<String> group) {
+		return getCriteriaQuery(from, from, cb, instance, instanceInterval,
+				filterMap, sort, group);
 	}
 
 	public static <S, T> CriteriaQuery<S> getCriteriaQuery(Class<S> get,
 			Class<T> from, CriteriaBuilder cb, Object instance,
-			Map<String, OP> filterMap, Map<String, OR> sort, List<String> group) {
+			Object instanceInterval, Map<String, OP> filterMap,
+			Map<String, OR> sort, List<String> group) {
 		if (get != null && from != null) {
 
 			/**
@@ -130,7 +155,7 @@ public class JPAUtil {
 			 * Predicates
 			 */
 			Predicate filters = getPredicates(root, from, cb, instance,
-					filterMap, sort);
+					instanceInterval, filterMap, sort);
 			if (filters != null)
 				q.where(filters);
 
@@ -147,13 +172,11 @@ public class JPAUtil {
 			 */
 			if (sort != null && sort.size() > 0) {
 				List<Order> listorders = getOrders(cb, root, sort);
-				if (listorders != null)
+				if (listorders != null) {
 					q.orderBy(listorders);
+				}
 			}
 
-			/**
-			 * fields
-			 */
 			/**
 			 * base criteria
 			 */
@@ -224,7 +247,8 @@ public class JPAUtil {
 	}
 
 	private static Expression<?> getExpressionPathAndFunctions(
-			CriteriaBuilder cb, Path<String> pathString, String element, String function) {
+			CriteriaBuilder cb, Path<String> pathString, String element,
+			String function) {
 		Expression<?> expr = null;
 		Path<Number> pNumber = getNumberPath(pathString, element);
 		if (function.equalsIgnoreCase("count")) {
@@ -322,98 +346,124 @@ public class JPAUtil {
 	 * @param sort
 	 * @return
 	 */
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	private static <S, T> Predicate getPredicates(Root<S> root, Class<T> from,
-			CriteriaBuilder cb, Object instance, Map<String, OP> filterMap,
-			Map<String, OR> sort) {
+			CriteriaBuilder cb, Object instance, Object instanceInterval,
+			Map<String, OP> filterMap, Map<String, OR> sort) {
+		Iterator<String> iterator = filterMap.keySet().iterator();
 		Predicate filters = null;
-		Method[] methods = from.getDeclaredMethods();
-		for (int i = 0; i < methods.length; i++) {
-			try {
-				Method method = methods[i];
-				if (from.isAssignableFrom(method.getDeclaringClass())
-						&& method.getName().startsWith("get")
-						&& method.getName().length() > 3
-						&& method.getAnnotation(Transient.class) == null) {
-					String attribute = Character.toLowerCase(method.getName()
-							.charAt(3)) + method.getName().substring(4);
-					Object value = method.invoke(instance);
-					OP operation = OP.EQUAL;
-					if (value != null) {
-						/**
-						 * defining operation by filter Map
-						 */
-						Predicate p = null;
-						if (filterMap != null
-								&& filterMap.get(attribute) != null) {
-							operation = filterMap.get(attribute);
-						}
-
-						Path<Number> numberPath = null;
-						Number nvalue = null;
-						if (value instanceof Number) { 
-							numberPath = root.get(attribute);
-							nvalue = (Number) value;
-						}
-
-						if (operation.equals(OP.EQUAL)) {
-							p = cb.equal(root.get(attribute), value);
-						} else if (operation.equals(OP.NOTEQUAL)) {
-							p = cb.notEqual(root.get(attribute), value);
-						} else if (operation.equals(OP.ILIKE)
-								&& value instanceof String) {
-							p = cb.like(cb.lower(root.<String> get(attribute)),
-									"%" + ((String) value).toLowerCase() + "%");
-						} else if (operation.equals(OP.LIKE)
-								&& value instanceof String) {
-							p = cb.like(root.<String> get(attribute), "%"
-									+ ((String) value) + "%");
-						} else if (operation.equals(OP.NOTILIKE)
-								&& value instanceof String) {
-							p = cb.notLike(
-									cb.lower(root.<String> get(attribute)), "%"
-											+ ((String) value).toLowerCase()
-											+ "%");
-						} else if (operation.equals(OP.NOTLIKE)
-								&& value instanceof String) {
-							p = cb.notLike(root.<String> get(attribute), "%"
-									+ ((String) value) + "%");
-						} else if (operation.equals(OP.IN)) {
-							p = root.get(attribute).in(value);
-						} else if (operation.equals(OP.NOTIN)) {
-							p = cb.not(root.get(attribute).in(value));
-						} else if (operation.equals(OP.BETWEEN)) {
-							// TODO: forma de receber dois valores
-						} else if (operation.equals(OP.ISNULL)) {
-							p = cb.isNull(root.get(attribute));
-						} else if (operation.equals(OP.ISNOTNULL)) {
-							p = cb.isNotNull(root.get(attribute));
-						} else if (operation.equals(OP.LE)
-								&& value instanceof Number) {
-							p = cb.le(numberPath, nvalue);
-						} else if (operation.equals(OP.LT)
-								&& value instanceof Number) {
-							p = cb.lt(numberPath, nvalue);
-						} else if (operation.equals(OP.GE)
-								&& value instanceof Number) {
-							p = cb.ge(numberPath, nvalue);
-						} else if (operation.equals(OP.GT)
-								&& value instanceof Number) {
-							p = cb.gt(numberPath, nvalue);
-						}
-
-						if (p != null)
-							filters = (filters != null) ? cb.and(filters, p)
-									: p;
-					}
+		while (iterator.hasNext()) {
+			Predicate p = null;
+			String filter = (String) iterator.next();
+			OP operation = filterMap.get(filter);
+			Object value = getPathValue(instance, filter);
+			Path<String> spath = getPath(root, filter);
+			if (operation.equals(OP.EQUAL)) {
+				p = cb.equal(spath, value);
+			} else if (operation.equals(OP.NOTEQUAL)) {
+				p = cb.notEqual(spath, value);
+			} else if (value instanceof String) {
+				if (operation.equals(OP.ILIKE)) {
+					p = cb.like(cb.lower(spath),
+							"%" + ((String) value).toLowerCase() + "%");
+				} else if (operation.equals(OP.LIKE)) {
+					p = cb.like(spath, "%" + ((String) value) + "%");
+				} else if (operation.equals(OP.NOTILIKE)) {
+					p = cb.notLike(cb.lower(spath),
+							"%" + ((String) value).toLowerCase() + "%");
+				} else if (operation.equals(OP.NOTLIKE)) {
+					p = cb.notLike(spath, "%" + ((String) value) + "%");
 				}
-			} catch (IllegalAccessException e) {
-				e.printStackTrace();
-			} catch (IllegalArgumentException e) {
-				e.printStackTrace();
-			} catch (InvocationTargetException e) {
-				e.printStackTrace();
+			} else if (operation.equals(OP.IN)) {
+				p = spath.in(value);
+			} else if (operation.equals(OP.NOTIN)) {
+				p = cb.not(spath.in(value));
+			} else if (operation.equals(OP.BETWEEN)
+					|| operation.equals(OP.NOTBETWEEN)) {
+				Object valueInterval = getPathValue(instanceInterval, filter);
+				if (value != null && valueInterval != null) {
+					p = getBetweenPredicate(cb, root, filter,
+							((Class<? extends Comparable>) value.getClass()),
+							value, valueInterval, operation);
+				}
+			} else if (operation.equals(OP.ISNULL)) {
+				p = cb.isNull(spath);
+			} else if (operation.equals(OP.ISNOTNULL)) {
+				p = cb.isNotNull(spath);
+			} else if (value instanceof Number) {
+				Path<Number> npath = getPathFromStringPath(root, filter,
+						Number.class);
+				Number nvalue = (Number) value;
+				if (operation.equals(OP.LE)) {
+					p = cb.le(npath, nvalue);
+				} else if (operation.equals(OP.LT)) {
+					p = cb.lt(npath, nvalue);
+				} else if (operation.equals(OP.GE)) {
+					p = cb.ge(npath, nvalue);
+				} else if (operation.equals(OP.GT)) {
+					p = cb.gt(npath, nvalue);
+				}
 			}
+			if (p != null)
+				filters = (filters != null) ? cb.and(filters, p) : p;
 		}
 		return filters;
+	}
+
+	private static Object getPathValue(Object instance, String path) {
+		Object o = instance;
+		Class<? extends Object> clazz = null;
+		try {
+			if (path != null) {
+				String[] splitedpath = path.split("\\.");
+				for (int i = 0; i < splitedpath.length; i++) {
+					clazz = o.getClass();
+					String methodName = "get"
+							+ splitedpath[i].toUpperCase().charAt(0)
+							+ splitedpath[i].substring(1);
+					Method method = clazz.getMethod(methodName);
+					o = method.invoke(o);
+					if (o == null)
+						return null;
+				}
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return o;
+	}
+
+	private static <S, T> Path<T> getPathFromStringPath(Root<S> root,
+			String path, Class<T> clazzTarget) {
+		Path<T> p = null;
+		try {
+			if (path != null) {
+				String[] splitedpath = path.split("\\.");
+				p = root.get(splitedpath[0]);
+				for (int z = 1; z < splitedpath.length; z++) {
+					p = p.get(splitedpath[z]);
+				}
+			}
+		} catch (Exception e) {
+			log.error("error when get path: " + path + " from "
+					+ root.getJavaType());
+			e.printStackTrace();
+		}
+		return p;
+	}
+
+	public static <S extends Comparable<S>, T> Predicate getBetweenPredicate(
+			CriteriaBuilder cb, Root<T> root, String filter, Class<S> clazz,
+			Object valueA, Object valueB, OP operation) {
+		Path<S> numberPath = getPathFromStringPath(root, filter, clazz);
+		@SuppressWarnings("unchecked")
+		S nvalueA = (S) valueA;
+		@SuppressWarnings("unchecked")
+		S nvalueB = (S) valueB;
+		if (operation.equals(OP.BETWEEN)) {
+			return cb.between(numberPath, nvalueA, nvalueB);
+		} else {
+			return cb.not(cb.between(numberPath, nvalueA, nvalueB));
+		}
 	}
 }
