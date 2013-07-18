@@ -3,7 +3,7 @@
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>br.com.shellcode</groupId>
 	<artifactId>vraptorutils</artifactId>
-	<version>0.0.1-SNAPSHOT</version>
+	<version>1.0</version>
 	<name>VRaptor Utils</name>
 	<properties>
 		<maven.compiler.plugin.version>3.1</maven.compiler.plugin.version>
@@ -19,6 +19,7 @@
 	</licenses>
 	<scm>
 		<url>https://github.com/andersonbr/vraptorutils</url>
+		<tag>1.0</tag>
 	</scm>
 	<dependencies>
 		<!-- slf4j -->
